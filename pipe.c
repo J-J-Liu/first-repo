@@ -28,12 +28,14 @@ int main() {
     data.b = 2;
     strcpy(data.str, "Hello from C");
 
-    // 持续写入结构体到命名管道
-    while (1) {
+    // 发送1000个结构体
+    int count = 0;
+    while (count < 1000) {
         write(fd, &data, sizeof(data));
         printf("Written: %d %d %s\n", data.a, data.b, data.str);
         data.a++;
         data.b++;
+        count++;
         sleep(1);
     }
 
