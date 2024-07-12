@@ -1,0 +1,45 @@
+#include "dr_api.h"
+#include "drsyscall.h"
+
+// 定义在AArch64上的write系统调用号
+#ifndef __NR_write
+#define __NR_write 64
+#endif
+
+void write_to_fd(int fd, const void *data, size_t size) {
+    dr_mcontext_t mcontext;
+    dr_syscall_result_t result;
+    
+    // 获取当前上下文
+    dr_get_mcontext(dr_get_current_drcontext(), &mcontext);
+    
+    // 设置系统调用号和参数
+    mcontext.x0 = __NR_write; // 写系统调用号
+    mcontext.x1 = (reg_t)fd;  // 文件描述符
+    mcontext.x2 = (reg_t)data; // 数据指针
+    mcontext.x3 = (reg_t)size; // 数据大小
+
+    // 执行系统调用
+    result = dr_syscall_invoke(&mcontext);
+    
+    // 检查系统调用结果
+    if (result.value < 0) {
+        dr_fprintf(STDERR, "write failed with error code %d\n", result.value);
+    }
+}
+
+DR_EXPORT void dr_init(client_id_t id) {
+    dr_log(NULL, LOG_ALL, 1, "Client 'write_example' initializing\n");
+    if (!drmgr_init()) {
+        DR_ASSERT(false);
+        return;
+    }
+
+    // 测试调用write_to_fd函数
+    const char *message = "Hello, DynamoRIO!";
+    write_to_fd(STDOUT, message, strlen(message));
+}
+
+DR_EXPORT void dr_exit(void) {
+    drmgr_exit();
+}
