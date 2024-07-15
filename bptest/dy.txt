@@ -1,0 +1,53 @@
+#include "dr_api.h"
+#include "branch_predictor.h"
+
+static void event_exit(void);
+static dr_emit_flags_t event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb, bool for_trace, bool translating);
+static dr_emit_flags_t event_bb_instrumentation(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating);
+static void event_app_instruction(void *drcontext, instr_instrument_msg_t *instrument_msg);
+
+DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
+    dr_set_client_name("Branch Predictor Plugin", "https://example.com");
+    dr_register_exit_event(event_exit);
+
+    if (!drmgr_init()) {
+        DR_ASSERT(false);
+        return;
+    }
+
+    if (!drmgr_register_bb_event(event_bb_analysis, NULL) || !drmgr_register_bb_insertion_event(event_bb_instrumentation, NULL)) {
+        DR_ASSERT(false);
+        return;
+    }
+
+    if (!drmgr_register_instrumentation_event(NULL, event_app_instruction, NULL)) {
+        DR_ASSERT(false);
+        return;
+    }
+
+    branch_predictor_init();
+}
+
+static void event_exit(void) {
+    drmgr_exit();
+    branch_predictor_exit();
+}
+
+static dr_emit_flags_t event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb, bool for_trace, bool translating) {
+    // 分析基本块
+    return DR_EMIT_DEFAULT;
+}
+
+static dr_emit_flags_t event_bb_instrumentation(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr, bool for_trace, bool translating) {
+    instr_t *last_instr = instrlist_last(bb); // 获取基本块的最后一条指令
+    if (instr_is_cbr(last_instr)) { // 检查最后一条指令是否是条件分支指令
+        // 插入分支预测器代码
+        branch_predictor_instrument_branch(drcontext, bb, last_instr);
+    }
+    return DR_EMIT_DEFAULT;
+}
+
+static void event_app_instruction(void *drcontext, instr_instrument_msg_t *instrument_msg) {
+    // 处理应用程序指令执行事件
+    branch_predictor_update(drcontext, instrument_msg->instr, instrument_msg->taken);
+}
