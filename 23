@@ -1,0 +1,99 @@
+static void
+insert_save_opnd(void *drcontext, instrlist_t *ilist, instr_t *where, reg_id_t base,
+                 reg_id_t scratch, opnd_t opnd, int offset)
+{
+    if (opnd_is_reg(opnd)) {
+        // 保存寄存器操作数
+        MINSERT(ilist, where,
+                XINST_CREATE_store(
+                    drcontext,
+                    OPND_CREATE_MEMPTR(base, offset),
+                    opnd_create_reg(opnd_get_reg(opnd))));
+    } else if (opnd_is_immed_int(opnd)) {
+        // 保存立即数操作数
+        MINSERT(ilist, where,
+                XINST_CREATE_load_int(
+                    drcontext,
+                    opnd_create_reg(scratch),
+                    OPND_CREATE_INT32(opnd_get_immed_int(opnd))));
+        MINSERT(ilist, where,
+                XINST_CREATE_store(
+                    drcontext,
+                    OPND_CREATE_MEMPTR(base, offset),
+                    opnd_create_reg(scratch)));
+    } else if (opnd_is_memory_reference(opnd)) {
+        // 保存内存引用操作数
+        reg_id_t base_reg = opnd_get_base(opnd);
+        reg_id_t index_reg = opnd_get_index(opnd);
+        int disp = opnd_get_disp(opnd);
+
+        MINSERT(ilist, where,
+                XINST_CREATE_store(
+                    drcontext,
+                    OPND_CREATE_MEMPTR(base, offset),
+                    opnd_create_reg(base_reg)));
+        MINSERT(ilist, where,
+                XINST_CREATE_store(
+                    drcontext,
+                    OPND_CREATE_MEMPTR(base, offset + sizeof(reg_id_t)),
+                    opnd_create_reg(index_reg)));
+        MINSERT(ilist, where,
+                XINST_CREATE_load_int(
+                    drcontext,
+                    opnd_create_reg(scratch),
+                    OPND_CREATE_INT32(disp)));
+        MINSERT(ilist, where,
+                XINST_CREATE_store(
+                    drcontext,
+                    OPND_CREATE_MEMPTR(base, offset + 2 * sizeof(reg_id_t)),
+                    opnd_create_reg(scratch)));
+    }
+}
+
+
+
+/* insert inline code to add an instruction entry into the buffer */
+static void
+instrument_instr(void *drcontext, instrlist_t *ilist, instr_t *where)
+{
+    /* We need two scratch registers */
+    reg_id_t reg_ptr, reg_tmp;
+    if (drreg_reserve_register(drcontext, ilist, where, NULL, &reg_ptr) !=
+            DRREG_SUCCESS ||
+        drreg_reserve_register(drcontext, ilist, where, NULL, &reg_tmp) !=
+            DRREG_SUCCESS) {
+        DR_ASSERT(false); /* cannot recover */
+        return;
+    }
+
+    insert_load_buf_ptr(drcontext, ilist, where, reg_ptr);
+    insert_save_pc(drcontext, ilist, where, reg_ptr, reg_tmp, instr_get_app_pc(where));
+    insert_save_opcode(drcontext, ilist, where, reg_ptr, reg_tmp, instr_get_opcode(where));
+
+    // 保存源操作数
+    int num_srcs = instr_num_srcs(where);
+    for (int i = 0; i < num_srcs; i++) {
+        insert_save_opnd(drcontext, ilist, where, reg_ptr, reg_tmp, instr_get_src(where, i),
+                         offsetof(ins_ref_t, src_operands) + i * sizeof(opnd_t));
+    }
+
+    // 保存目标操作数
+    int num_dsts = instr_num_dsts(where);
+    for (int i = 0; i < num_dsts; i++) {
+        insert_save_opnd(drcontext, ilist, where, reg_ptr, reg_tmp, instr_get_dst(where, i),
+                         offsetof(ins_ref_t, dst_operands) + i * sizeof(opnd_t));
+    }
+
+    insert_update_buf_ptr(drcontext, ilist, where, reg_ptr, sizeof(ins_ref_t));
+
+    /* Restore scratch registers */
+    if (drreg_unreserve_register(drcontext, ilist, where, reg_ptr) != DRREG_SUCCESS ||
+        drreg_unreserve_register(drcontext, ilist, where, reg_tmp) != DRREG_SUCCESS)
+        DR_ASSERT(false);
+}
+typedef struct _ins_ref_t {
+    app_pc pc;
+    int opcode;
+    opnd_t src_operands[MAX_NUM_SRCS];
+    opnd_t dst_operands[MAX_NUM_DSTS];
+} ins_ref_t;
