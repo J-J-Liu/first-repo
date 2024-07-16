@@ -1,18 +1,37 @@
 #include "branch_predictor.h"
 #include <vector>
+#include <string>
 
-static int correct_predictions = 0;
-static int total_predictions = 0;
-
-// 可以定义多种分支预测器
 class BranchPredictor {
 public:
+    BranchPredictor(const std::string &name) : name(name), correct_predictions(0), total_predictions(0) {}
+    
     virtual bool predict(instr_t *instr) = 0;
     virtual void update(instr_t *instr, bool taken) = 0;
+
+    void record_prediction(bool taken, bool prediction) {
+        if (prediction == taken) {
+            correct_predictions++;
+        }
+        total_predictions++;
+    }
+
+    void print_stats() const {
+        dr_fprintf(STDERR, "%s Correct Predictions: %d\n", name.c_str(), correct_predictions);
+        dr_fprintf(STDERR, "%s Total Predictions: %d\n", name.c_str(), total_predictions);
+        dr_fprintf(STDERR, "%s Accuracy: %.2f%%\n", name.c_str(), (100.0 * correct_predictions / total_predictions));
+    }
+
+private:
+    std::string name;
+    int correct_predictions;
+    int total_predictions;
 };
 
 class StaticPredictor : public BranchPredictor {
 public:
+    StaticPredictor() : BranchPredictor("StaticPredictor") {}
+
     bool predict(instr_t *instr) override {
         return true; // 永远预测分支被采取
     }
@@ -33,12 +52,10 @@ void branch_predictor_init() {
 
 void branch_predictor_exit() {
     for (auto predictor : predictors) {
+        predictor->print_stats();
         delete predictor;
     }
     predictors.clear();
-    dr_fprintf(STDERR, "Correct Predictions: %d\n", correct_predictions);
-    dr_fprintf(STDERR, "Total Predictions: %d\n", total_predictions);
-    dr_fprintf(STDERR, "Accuracy: %.2f%%\n", (100.0 * correct_predictions / total_predictions));
 }
 
 void branch_predictor_instrument_branch(void *drcontext, instrlist_t *bb, instr_t *instr) {
@@ -49,10 +66,7 @@ void branch_predictor_instrument_branch(void *drcontext, instrlist_t *bb, instr_
 void branch_predictor_update(void *drcontext, instr_t *instr, bool taken) {
     for (auto predictor : predictors) {
         bool prediction = predictor->predict(instr);
-        if (prediction == taken) {
-            correct_predictions++;
-        }
-        total_predictions++;
+        predictor->record_prediction(taken, prediction);
         predictor->update(instr, taken);
     }
 }
