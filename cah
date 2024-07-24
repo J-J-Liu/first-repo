@@ -1,0 +1,212 @@
+#include <stdio.h>
+#include <stddef.h> /* for offsetof */
+#include <string.h>
+#include "dr_api.h"
+#include "drmgr.h"
+#include "drreg.h"
+#include "drutil.h"
+#include "drx.h"
+#include "utils.h"
+
+enum {
+    REF_TYPE_READ = 0,
+    REF_TYPE_WRITE = 1,
+};
+typedef struct _mem_ref_t {
+    ushort type;
+    ushort size;
+    app_pc addr;
+} mem_ref_t;
+
+#define MAX_NUM_MEM_REFS 4096
+#define MEM_BUF_SIZE (sizeof(mem_ref_t) * MAX_NUM_MEM_REFS)
+
+typedef struct {
+    byte *seg_base;
+    mem_ref_t *buf_base;
+    file_t log;
+    FILE *logf;
+    uint64 num_refs;
+} per_thread_t;
+
+static client_id_t client_id;
+static void *mutex;
+static uint64 num_refs;
+static bool log_to_stderr;
+
+enum {
+    MEMTRACE_TLS_OFFS_BUF_PTR,
+    MEMTRACE_TLS_COUNT,
+};
+static reg_id_t tls_seg;
+static uint tls_offs;
+static int tls_idx;
+#define TLS_SLOT(tls_base, enum_val) (void **)((byte *)(tls_base) + tls_offs + (enum_val))
+#define BUF_PTR(tls_base) *(mem_ref_t **)TLS_SLOT(tls_base, MEMTRACE_TLS_OFFS_BUF_PTR)
+
+#define MINSERT instrlist_meta_preinsert
+
+static void
+memtrace(void *drcontext)
+{
+    per_thread_t *data;
+    mem_ref_t *mem_ref, *buf_ptr;
+    data = drmgr_get_tls_field(drcontext, tls_idx);
+    buf_ptr = BUF_PTR(data->seg_base);
+
+    FILE *cache_file = fopen("cache_input.txt", "a");
+    for (mem_ref = (mem_ref_t *)data->buf_base; mem_ref < buf_ptr; mem_ref++) {
+        fprintf(data->logf, "" PIFX ": %2d, %s\n", (ptr_uint_t)mem_ref->addr,
+                mem_ref->size,
+                (mem_ref->type > REF_TYPE_WRITE)
+                    ? decode_opcode_name(mem_ref->type)
+                    : (mem_ref->type == REF_TYPE_WRITE ? "w" : "r"));
+
+        // Write to the cache input file
+        fprintf(cache_file, "%s %p %d\n",
+                (mem_ref->type == REF_TYPE_WRITE ? "w" : "r"),
+                mem_ref->addr, mem_ref->size);
+                
+        data->num_refs++;
+    }
+    fclose(cache_file);
+    BUF_PTR(data->seg_base) = data->buf_base;
+}
+
+// ... (rest of the code remains the same)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <unordered_map>
+#include <string>
+#include <sstream>
+
+struct CacheBlock {
+    unsigned long tag;
+    bool valid;
+    CacheBlock() : tag(0), valid(false) {}
+};
+
+class L1Cache {
+public:
+    L1Cache(int cacheSize, int blockSize, int associativity, const std::string& replacementPolicy)
+        : cacheSize(cacheSize), blockSize(blockSize), associativity(associativity), replacementPolicy(replacementPolicy) {
+        numBlocks = cacheSize / blockSize;
+        numSets = numBlocks / associativity;
+        cache.resize(numSets, std::vector<CacheBlock>(associativity));
+    }
+
+    void accessMemory(const std::string& type, unsigned long address) {
+        unsigned long blockAddress = address / blockSize;
+        unsigned long index = blockAddress % numSets;
+        unsigned long tag = blockAddress / numSets;
+
+        // Check for cache hit
+        for (int i = 0; i < associativity; ++i) {
+            if (cache[index][i].valid && cache[index][i].tag == tag) {
+                hits++;
+                updateReplacement(index, i);
+                return;
+            }
+        }
+
+        // Cache miss
+        misses++;
+        replaceBlock(index, tag);
+    }
+
+    void printStatistics() const {
+        std::cout << "Cache hits: " << hits << std::endl;
+        std::cout << "Cache misses: " << misses << std::endl;
+    }
+
+private:
+    int cacheSize;
+    int blockSize;
+    int associativity;
+    int numBlocks;
+    int numSets;
+    std::string replacementPolicy;
+    std::vector<std::vector<CacheBlock>> cache;
+    std::unordered_map<int, std::vector<int>> lruList;
+    int hits = 0;
+    int misses = 0;
+
+    void updateReplacement(int index, int way) {
+        if (replacementPolicy == "LRU") {
+            auto& lru = lruList[index];
+            lru.erase(std::remove(lru.begin(), lru.end(), way), lru.end());
+            lru.push_back(way);
+        }
+    }
+
+    void replaceBlock(int index, unsigned long tag) {
+        int way = -1;
+        for (int i = 0; i < associativity; ++i) {
+            if (!cache[index][i].valid) {
+                way = i;
+                break;
+            }
+        }
+
+        if (way == -1) {
+            if (replacementPolicy == "LRU") {
+                way = lruList[index][0];
+                lruList[index].erase(lruList[index].begin());
+            } else {
+                way = 0;  // default to 0 if no valid replacement policy is set
+            }
+        }
+
+        cache[index][way].tag = tag;
+        cache[index][way].valid = true;
+        updateReplacement(index, way);
+    }
+};
+
+void processMemoryAccesses(const std::string& filename, L1Cache& cache) {
+    std::ifstream file(filename);
+    std::string line;
+    while (std::getline(file, line)) {
+        std::istringstream iss(line);
+        std::string type;
+        unsigned long address;
+        int size;
+        if (!(iss >> type >> std::hex >> address >> size)) { break; }
+        cache.accessMemory(type, address);
+    }
+}
+
+int main() {
+    int cacheSize = 32768; // 32KB
+    int blockSize = 64; // 64B
+    int associativity = 8;
+    std::string replacementPolicy = "LRU";
+
+    L1Cache cache(cacheSize, blockSize, associativity, replacementPolicy);
+    processMemoryAccesses("cache_input.txt", cache);
+    cache.printStatistics();
+
+    return 0;
+}
+
+
+
