@@ -1,0 +1,160 @@
+#include <iostream>
+#include <deque>
+#include <unordered_map>
+#include <vector>
+
+enum operand_type_t { REGISTER, MEMORY, IMMEDIATE };
+enum channel_status_t { FRONTEND_BOUND, BACKEND_BOUND, RETIRE, BAD_PREDICTION };
+
+typedef struct _operand_t {
+    operand_type_t type;
+    bool is_source;
+    bool is_dest;
+    union {
+        int reg;
+        void *mem_addr;
+        int imm_val;
+    } value;
+} operand_t;
+
+typedef struct _ins_ref_t {
+    void *pc;
+    int opcode;
+    int num_operands;
+    operand_t operands[4];
+} ins_ref_t;
+
+// Register sequence to track usage delay
+std::unordered_map<int, int> register_delay;
+
+// Function to add a register to the delay sequence
+void add_register(int reg_num, int delay) {
+    register_delay[reg_num] = delay;
+}
+
+// Deque sequence for instructions and operand availability
+struct InsDequeEntry {
+    ins_ref_t ins;
+    bool operand_availability[4];
+};
+std::deque<InsDequeEntry> instruction_queue;
+
+// Function to update operand availability
+void update_operand_availability(InsDequeEntry &entry) {
+    for (int i = 0; i < entry.ins.num_operands; i++) {
+        operand_t &op = entry.ins.operands[i];
+        if (op.type == IMMEDIATE || op.type == MEMORY) {
+            entry.operand_availability[i] = true;
+        } else if (op.type == REGISTER) {
+            entry.operand_availability[i] = (register_delay[op.value.reg] == 0);
+        }
+    }
+}
+
+// Launch channel marker array
+int launch_channels[4] = {0, 0, 0, 0};
+
+// Opcode-delay mapping function
+int get_opcode_delay(int opcode) {
+    switch (opcode) {
+        case 67:
+        case 68:
+            return 4;
+        case 32:
+        case 34:
+            return 2;
+        default:
+            return 0;
+    }
+}
+
+// Launch channel data structure
+channel_status_t channel_status[4];
+
+// Function to execute and assign instructions to channels
+void execute_instructions(std::vector<ins_ref_t> &instructions) {
+    for (auto &ins : instructions) {
+        InsDequeEntry entry = {ins, {false, false, false, false}};
+        update_operand_availability(entry);
+        instruction_queue.push_back(entry);
+    }
+
+    for (int i = 0; i < 4; i++) {
+        if (launch_channels[i] != 0) {
+            channel_status[i] = BACKEND_BOUND;
+            continue;
+        }
+
+        bool found = false;
+        for (auto it = instruction_queue.begin(); it != instruction_queue.end(); ++it) {
+            bool all_operands_available = true;
+            for (int j = 0; j < it->ins.num_operands; j++) {
+                if (!it->operand_availability[j]) {
+                    all_operands_available = false;
+                    break;
+                }
+            }
+
+            if (all_operands_available) {
+                int delay = get_opcode_delay(it->ins.opcode);
+                for (int j = 0; j < it->ins.num_operands; j++) {
+                    if (it->ins.operands[j].type == REGISTER && it->ins.operands[j].is_dest) {
+                        add_register(it->ins.operands[j].value.reg, delay);
+                    }
+                }
+                launch_channels[i] = delay;
+                channel_status[i] = RETIRE;
+                instruction_queue.erase(it);
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            channel_status[i] = FRONTEND_BOUND;
+        }
+    }
+}
+
+// Function to update delays
+void update_delays() {
+    for (auto &reg : register_delay) {
+        if (reg.second > 0) {
+            reg.second--;
+        }
+    }
+
+    for (int i = 0; i < 4; i++) {
+        if (launch_channels[i] > 0) {
+            launch_channels[i]--;
+        }
+    }
+
+    for (auto &entry : instruction_queue) {
+        update_operand_availability(entry);
+    }
+}
+
+// Example usage
+int main() {
+    // Example instructions
+    ins_ref_t ins1 = {(void*)0x1, 67, 2, {{REGISTER, true, false, .value = {1}}, {IMMEDIATE, true, false, .value = {42}}}};
+    ins_ref_t ins2 = {(void*)0x2, 32, 1, {{REGISTER, true, false, .value = {2}}}};
+    std::vector<ins_ref_t> instructions = {ins1, ins2};
+
+    // Execute instructions
+    execute_instructions(instructions);
+
+    // Print initial channel statuses
+    for (int i = 0; i < 4; i++) {
+        std::cout << "Channel " << i << ": " << channel_status[i] << std::endl;
+    }
+
+    // Update delays and print channel statuses after update
+    update_delays();
+    for (int i = 0; i < 4; i++) {
+        std::cout << "Channel " << i << ": " << channel_status[i] << std::endl;
+    }
+
+    return 0;
+}
